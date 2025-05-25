@@ -14,6 +14,108 @@ from sklearn.metrics import (
 import os
 from pathlib import Path
 
+
+def calculate_metrics(y_true, y_pred, y_prob=None, class_names=None):
+    """
+    Calculate comprehensive classification metrics.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        y_prob: Predicted probabilities (optional)
+        class_names: List of class names (optional)
+        
+    Returns:
+        Dictionary containing various classification metrics
+    """
+    # Convert inputs to numpy arrays if needed
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    
+    # Basic classification metrics
+    metrics = {
+        'accuracy': accuracy_score(y_true, y_pred),
+        'precision_macro': precision_score(y_true, y_pred, average='macro', zero_division=0),
+        'recall_macro': recall_score(y_true, y_pred, average='macro', zero_division=0),
+        'f1_macro': f1_score(y_true, y_pred, average='macro', zero_division=0),
+        'precision_weighted': precision_score(y_true, y_pred, average='weighted', zero_division=0),
+        'recall_weighted': recall_score(y_true, y_pred, average='weighted', zero_division=0),
+        'f1_weighted': f1_score(y_true, y_pred, average='weighted', zero_division=0)
+    }
+    
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    metrics['confusion_matrix'] = cm
+    
+    # Class names
+    unique_labels = np.unique(np.concatenate([y_true, y_pred]))
+    if class_names is not None:
+        metrics['class_names'] = [str(class_names[i]) if i < len(class_names) else f"class_{i}" for i in unique_labels]
+    else:
+        metrics['class_names'] = [f"class_{i}" for i in unique_labels]
+    
+    # Per-class metrics
+    for i, label in enumerate(unique_labels):
+        label_name = metrics['class_names'][i]
+        # Binary classification for each class vs rest
+        y_true_binary = (y_true == label).astype(int)
+        y_pred_binary = (y_pred == label).astype(int)
+        
+        metrics[f'precision_{label_name}'] = precision_score(y_true_binary, y_pred_binary, zero_division=0)
+        metrics[f'recall_{label_name}'] = recall_score(y_true_binary, y_pred_binary, zero_division=0)
+        metrics[f'f1_{label_name}'] = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+    
+    # ROC AUC if probabilities are provided
+    if y_prob is not None:
+        try:
+            # Handle both binary and multiclass cases
+            if len(unique_labels) == 2:  # Binary classification
+                if y_prob.ndim > 1 and y_prob.shape[1] > 1:
+                    # Take the probability of the positive class
+                    y_prob_binary = y_prob[:, 1]
+                else:
+                    y_prob_binary = y_prob
+                
+                fpr, tpr, _ = roc_curve(y_true, y_prob_binary)
+                metrics['roc_auc'] = auc(fpr, tpr)
+                
+                # Precision-Recall curve
+                precision, recall, _ = precision_recall_curve(y_true, y_prob_binary)
+                metrics['pr_auc'] = auc(recall, precision)
+                metrics['avg_precision'] = average_precision_score(y_true, y_prob_binary)
+            
+            else:  # Multiclass
+                # One-vs-Rest ROC AUC
+                if y_prob.ndim > 1 and y_prob.shape[1] > 1:
+                    n_classes = len(unique_labels)
+                    roc_auc_scores = []
+                    
+                    for i, label in enumerate(unique_labels):
+                        y_true_binary = (y_true == label).astype(int)
+                        if i < y_prob.shape[1]:
+                            fpr, tpr, _ = roc_curve(y_true_binary, y_prob[:, i])
+                            roc_auc_scores.append(auc(fpr, tpr))
+                    
+                    if roc_auc_scores:
+                        metrics['roc_auc_macro'] = np.mean(roc_auc_scores)
+                        
+                        # Store per-class AUC
+                        for i, score in enumerate(roc_auc_scores):
+                            class_name = metrics['class_names'][i]
+                            metrics[f'roc_auc_{class_name}'] = score
+        except Exception as e:
+            # If ROC calculation fails, continue without it
+            print(f"Warning: Could not calculate ROC AUC: {e}")
+    
+    # Classification report as string
+    try:
+        target_names = metrics['class_names'] if class_names is not None else None
+        metrics['classification_report'] = classification_report(y_true, y_pred, target_names=target_names)
+    except Exception as e:
+        metrics['classification_report'] = f"Could not generate classification report: {e}"
+    
+    return metrics
+
 class ModelEvaluator:
     """
     Class for evaluating and visualizing model performance.
