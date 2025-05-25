@@ -9,23 +9,23 @@ import sys
 import argparse
 from PySide6.QtWidgets import QApplication, QSplashScreen, QMessageBox, QStyleFactory
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap, QIcon, QFont
+from PySide6.QtGui import QPixmap, QIcon, QFont, QColor
 
 # Import GUI components
 from gui_main import GlobalModelWindow
 
 
 def show_splash_screen(app, message="Loading application..."):
-    """Show a splash screen while the application loads."""
-    # Create a simple splash screen
-    splash_pixmap = QPixmap(600, 300)
-    splash_pixmap.fill(Qt.white)
+    """Show a modern splash screen while the application loads."""
+    # Create an enhanced splash screen
+    splash_pixmap = QPixmap(700, 400)
+    splash_pixmap.fill(QColor("#2196F3"))
     
     splash = QSplashScreen(splash_pixmap)
     splash.showMessage(
-        "HETROFL - Heterogeneous Federated Learning System",
+        "HETROFL v2.0\nHeterogeneous Federated Learning System\nEnhanced with Modern UI & Testing Capabilities\n\nLoading...",
         alignment=Qt.AlignCenter | Qt.AlignBottom,
-        color=Qt.black
+        color=Qt.white
     )
     
     # Show the splash screen
@@ -55,8 +55,9 @@ def check_dependencies():
 
 def main():
     """Main function to launch the HETROFL GUI."""
-    parser = argparse.ArgumentParser(description="HETROFL GUI")
+    parser = argparse.ArgumentParser(description="HETROFL GUI Enhanced v2.0")
     parser.add_argument('--style', default='Fusion', help='Qt style to use')
+    parser.add_argument('--theme', default='light', choices=['light', 'dark', 'auto'], help='Theme to use')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--skip-checks', action='store_true', help='Skip dependency checks')
     args = parser.parse_args()
@@ -98,6 +99,10 @@ def main():
         app.processEvents()
         
         main_window = GlobalModelWindow()
+        
+        # Apply theme if specified
+        if args.theme:
+            main_window.theme_manager.apply_theme(app, args.theme)
         
         # Close splash and show main window
         splash.finish(main_window)
