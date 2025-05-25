@@ -131,12 +131,15 @@ class BaseLocalModel(ABC):
         except:
             return 0
     
-    def save_model(self, save_dir=None):
+    def save_model(self, save_dir=None, round_num=None, experiment_id=None, metadata=None):
         """
-        Save the model to disk.
+        Save the model to disk with optional round and experiment information.
         
         Args:
             save_dir: Directory to save the model (default: MODEL_SAVE_DIR)
+            round_num: Round number for round-based saving
+            experiment_id: Experiment ID for organized saving
+            metadata: Additional metadata to save with the model
             
         Returns:
             Path to the saved model
@@ -144,8 +147,13 @@ class BaseLocalModel(ABC):
         if not self.is_fitted:
             raise ValueError("Model must be fitted before saving")
         
+        # Determine save directory
         if save_dir is None:
-            save_dir = os.path.join(MODEL_SAVE_DIR, f"client_{self.client_id}")
+            if experiment_id and round_num is not None:
+                save_dir = os.path.join(MODEL_SAVE_DIR, experiment_id, f"round_{round_num}", 
+                                      "local_models", f"client_{self.client_id}_{self.model_name}")
+            else:
+                save_dir = os.path.join(MODEL_SAVE_DIR, f"client_{self.client_id}")
         
         os.makedirs(save_dir, exist_ok=True)
         
@@ -162,6 +170,26 @@ class BaseLocalModel(ABC):
         # Save training history
         history_path = os.path.join(save_dir, f"{self.model_name}_history.joblib")
         joblib.dump(self.training_history, history_path)
+        
+        # Save metadata if provided
+        if metadata or round_num is not None or experiment_id:
+            metadata_dict = {
+                "model_name": self.model_name,
+                "client_id": self.client_id,
+                "round_num": round_num,
+                "experiment_id": experiment_id,
+                "save_timestamp": pd.Timestamp.now().isoformat(),
+                "is_fitted": self.is_fitted,
+                "output_dim": self.output_dim
+            }
+            
+            if metadata:
+                metadata_dict.update(metadata)
+            
+            metadata_path = os.path.join(save_dir, "metadata.json")
+            import json
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata_dict, f, indent=2)
         
         print(f"Model saved to {model_path}")
         

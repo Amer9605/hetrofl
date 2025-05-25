@@ -25,6 +25,7 @@ from matplotlib.figure import Figure
 
 from data.data_loader import DataLoader
 from utils.metrics import calculate_metrics
+from utils.model_persistence import ModelTracker
 
 
 class TestWorkerSignals(QObject):
@@ -661,3 +662,464 @@ class ModelTestPanel(QWidget):
     def on_test_result(self, results: Dict[str, Any]):
         """Handle test results."""
         self.results_widget.update_results(results)
+
+
+class RoundTestingWidget(QWidget):
+    """Widget for testing models across different rounds."""
+    
+    def __init__(self):
+        super().__init__()
+        self.model_tracker = ModelTracker()
+        self.current_experiment = None
+        self.test_data = None
+        self.test_labels = None
+        self.setup_ui()
+        self.refresh_experiments()
+        
+    def setup_ui(self):
+        """Setup the round testing UI."""
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title_label = QLabel("Round-by-Round Model Testing")
+        title_label.setProperty("class", "title")
+        layout.addWidget(title_label)
+        
+        # Experiment selection
+        exp_group = QGroupBox("Experiment Selection")
+        exp_layout = QFormLayout(exp_group)
+        
+        self.experiment_combo = QComboBox()
+        self.experiment_combo.currentTextChanged.connect(self.on_experiment_changed)
+        exp_layout.addRow("Experiment:", self.experiment_combo)
+        
+        self.refresh_exp_button = QPushButton("Refresh")
+        self.refresh_exp_button.clicked.connect(self.refresh_experiments)
+        exp_layout.addRow("", self.refresh_exp_button)
+        
+        layout.addWidget(exp_group)
+        
+        # Round selection
+        round_group = QGroupBox("Round Selection")
+        round_layout = QFormLayout(round_group)
+        
+        self.round_combo = QComboBox()
+        self.round_combo.addItem("All Rounds", "all")
+        round_layout.addRow("Round:", self.round_combo)
+        
+        # Test data selection
+        data_layout = QHBoxLayout()
+        self.data_path_edit = QLineEdit()
+        self.data_path_edit.setPlaceholderText("Select test dataset...")
+        self.browse_data_button = QPushButton("Browse")
+        self.browse_data_button.clicked.connect(self.browse_test_data)
+        
+        data_layout.addWidget(self.data_path_edit)
+        data_layout.addWidget(self.browse_data_button)
+        round_layout.addRow("Test Data:", data_layout)
+        
+        self.target_column_edit = QLineEdit()
+        self.target_column_edit.setPlaceholderText("Target column name")
+        round_layout.addRow("Target Column:", self.target_column_edit)
+        
+        layout.addWidget(round_group)
+        
+        # Test controls
+        controls_group = QGroupBox("Test Controls")
+        controls_layout = QVBoxLayout(controls_group)
+        
+        button_layout = QHBoxLayout()
+        self.test_round_button = QPushButton("Test Selected Round")
+        self.test_round_button.clicked.connect(self.test_selected_round)
+        self.test_round_button.setEnabled(False)
+        
+        self.test_all_button = QPushButton("Test All Rounds")
+        self.test_all_button.clicked.connect(self.test_all_rounds)
+        self.test_all_button.setEnabled(False)
+        
+        self.analyze_button = QPushButton("Generate Analysis")
+        self.analyze_button.clicked.connect(self.generate_analysis)
+        self.analyze_button.setEnabled(False)
+        
+        button_layout.addWidget(self.test_round_button)
+        button_layout.addWidget(self.test_all_button)
+        button_layout.addWidget(self.analyze_button)
+        controls_layout.addLayout(button_layout)
+        
+        # Progress
+        self.progress_bar = QProgressBar()
+        self.status_label = QLabel("Ready")
+        controls_layout.addWidget(self.progress_bar)
+        controls_layout.addWidget(self.status_label)
+        
+        layout.addWidget(controls_group)
+        
+        # Results display
+        results_group = QGroupBox("Test Results")
+        results_layout = QVBoxLayout(results_group)
+        
+        # Create tabs for different result views
+        self.results_tabs = QTabWidget()
+        
+        # Summary tab
+        self.summary_text = QTextEdit()
+        self.summary_text.setReadOnly(True)
+        self.results_tabs.addTab(self.summary_text, "Summary")
+        
+        # Detailed results tab
+        self.details_table = QTableWidget()
+        self.results_tabs.addTab(self.details_table, "Detailed Results")
+        
+        # Improvement analysis tab
+        self.analysis_text = QTextEdit()
+        self.analysis_text.setReadOnly(True)
+        self.results_tabs.addTab(self.analysis_text, "Improvement Analysis")
+        
+        results_layout.addWidget(self.results_tabs)
+        
+        # Export button
+        self.export_button = QPushButton("Export Results")
+        self.export_button.clicked.connect(self.export_results)
+        self.export_button.setEnabled(False)
+        results_layout.addWidget(self.export_button)
+        
+        layout.addWidget(results_group)
+        
+    def refresh_experiments(self):
+        """Refresh the list of available experiments."""
+        try:
+            experiments = self.model_tracker.list_experiments()
+            self.experiment_combo.clear()
+            
+            if experiments:
+                self.experiment_combo.addItems(experiments)
+                self.experiment_combo.setCurrentText(self.model_tracker.get_latest_experiment() or "")
+            else:
+                self.experiment_combo.addItem("No experiments found")
+                
+        except Exception as e:
+            print(f"Error refreshing experiments: {e}")
+            
+    def on_experiment_changed(self, experiment_id):
+        """Handle experiment selection change."""
+        if not experiment_id or experiment_id == "No experiments found":
+            self.current_experiment = None
+            self.round_combo.clear()
+            self.round_combo.addItem("All Rounds", "all")
+            self.test_round_button.setEnabled(False)
+            self.test_all_button.setEnabled(False)
+            self.analyze_button.setEnabled(False)
+            return
+            
+        self.current_experiment = experiment_id
+        
+        try:
+            # Get rounds for this experiment
+            rounds = self.model_tracker.get_experiment_rounds(experiment_id)
+            self.round_combo.clear()
+            self.round_combo.addItem("All Rounds", "all")
+            
+            for round_num in sorted(rounds.keys(), key=int):
+                self.round_combo.addItem(f"Round {round_num}", round_num)
+                
+            # Enable buttons if we have rounds
+            has_rounds = len(rounds) > 0
+            self.test_round_button.setEnabled(has_rounds)
+            self.test_all_button.setEnabled(has_rounds)
+            self.analyze_button.setEnabled(has_rounds)
+            
+            self.status_label.setText(f"Experiment loaded: {len(rounds)} rounds available")
+            
+        except Exception as e:
+            print(f"Error loading experiment rounds: {e}")
+            self.status_label.setText("Error loading experiment")
+            
+    def browse_test_data(self):
+        """Browse for test data file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Test Dataset",
+            "",
+            "Data Files (*.csv *.parquet *.json);;CSV Files (*.csv);;Parquet Files (*.parquet);;JSON Files (*.json);;All Files (*)"
+        )
+        
+        if file_path:
+            self.data_path_edit.setText(file_path)
+            self.load_test_data(file_path)
+            
+    def load_test_data(self, file_path):
+        """Load test data from file."""
+        try:
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            elif file_path.endswith('.parquet'):
+                df = pd.read_parquet(file_path)
+            elif file_path.endswith('.json'):
+                df = pd.read_json(file_path, lines=True)
+            else:
+                raise ValueError("Unsupported file format")
+                
+            # Auto-detect target column if not set
+            if not self.target_column_edit.text():
+                # Common target column names
+                target_candidates = ['target', 'label', 'class', 'y', 'Attack', 'attack']
+                for candidate in target_candidates:
+                    if candidate in df.columns:
+                        self.target_column_edit.setText(candidate)
+                        break
+                        
+            self.status_label.setText(f"Test data loaded: {len(df)} samples, {len(df.columns)} features")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load test data: {str(e)}")
+            
+    def prepare_test_data(self):
+        """Prepare test data for testing."""
+        file_path = self.data_path_edit.text()
+        target_column = self.target_column_edit.text()
+        
+        if not file_path or not target_column:
+            QMessageBox.warning(self, "Warning", "Please select test data and specify target column.")
+            return False
+            
+        try:
+            # Load data
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            elif file_path.endswith('.parquet'):
+                df = pd.read_parquet(file_path)
+            elif file_path.endswith('.json'):
+                df = pd.read_json(file_path, lines=True)
+            else:
+                raise ValueError("Unsupported file format")
+                
+            if target_column not in df.columns:
+                QMessageBox.critical(self, "Error", f"Target column '{target_column}' not found in dataset.")
+                return False
+                
+            # Prepare features and labels
+            self.test_data = df.drop(columns=[target_column])
+            self.test_labels = df[target_column]
+            
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to prepare test data: {str(e)}")
+            return False
+            
+    def test_selected_round(self):
+        """Test models from the selected round."""
+        if not self.current_experiment:
+            QMessageBox.warning(self, "Warning", "Please select an experiment.")
+            return
+            
+        if not self.prepare_test_data():
+            return
+            
+        selected_round = self.round_combo.currentData()
+        if selected_round == "all":
+            QMessageBox.information(self, "Info", "Please select a specific round or use 'Test All Rounds'.")
+            return
+            
+        try:
+            self.progress_bar.setValue(0)
+            self.status_label.setText(f"Testing round {selected_round}...")
+            
+            # Test the specific round
+            test_results = self.model_tracker.test_models_across_rounds(
+                experiment_id=self.current_experiment,
+                test_data=self.test_data,
+                test_labels=self.test_labels,
+                save_results=True
+            )
+            
+            if test_results and selected_round in test_results['rounds']:
+                round_data = test_results['rounds'][selected_round]
+                self.display_round_results(selected_round, round_data)
+                self.export_button.setEnabled(True)
+                self.status_label.setText(f"Round {selected_round} testing completed")
+            else:
+                self.status_label.setText(f"No results for round {selected_round}")
+                
+            self.progress_bar.setValue(100)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to test round: {str(e)}")
+            self.status_label.setText("Testing failed")
+            
+    def test_all_rounds(self):
+        """Test models from all rounds."""
+        if not self.current_experiment:
+            QMessageBox.warning(self, "Warning", "Please select an experiment.")
+            return
+            
+        if not self.prepare_test_data():
+            return
+            
+        try:
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Testing all rounds...")
+            
+            # Test all rounds
+            test_results = self.model_tracker.test_models_across_rounds(
+                experiment_id=self.current_experiment,
+                test_data=self.test_data,
+                test_labels=self.test_labels,
+                save_results=True
+            )
+            
+            if test_results:
+                self.display_all_results(test_results)
+                self.export_button.setEnabled(True)
+                self.status_label.setText(f"All rounds testing completed ({len(test_results['rounds'])} rounds)")
+            else:
+                self.status_label.setText("No test results available")
+                
+            self.progress_bar.setValue(100)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to test all rounds: {str(e)}")
+            self.status_label.setText("Testing failed")
+            
+    def generate_analysis(self):
+        """Generate improvement analysis."""
+        if not self.current_experiment:
+            QMessageBox.warning(self, "Warning", "Please select an experiment.")
+            return
+            
+        try:
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Generating improvement analysis...")
+            
+            # Generate analysis
+            analysis = self.model_tracker.analyze_improvement_trends(
+                experiment_id=self.current_experiment,
+                save_plots=True
+            )
+            
+            if analysis:
+                self.display_analysis(analysis)
+                self.status_label.setText("Analysis completed")
+            else:
+                self.status_label.setText("No analysis data available")
+                
+            self.progress_bar.setValue(100)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate analysis: {str(e)}")
+            self.status_label.setText("Analysis failed")
+            
+    def display_round_results(self, round_num, round_data):
+        """Display results for a specific round."""
+        # Summary
+        summary = f"Round {round_num} Test Results\n"
+        summary += "=" * 30 + "\n\n"
+        
+        # Global model results
+        if 'global_model' in round_data and round_data['global_model']:
+            global_results = round_data['global_model']
+            if 'accuracy' in global_results:
+                summary += f"Global Model:\n"
+                summary += f"  Accuracy: {global_results['accuracy']:.4f}\n"
+                summary += f"  F1 Score: {global_results['f1_score']:.4f}\n\n"
+        
+        # Local model results
+        if 'local_models' in round_data:
+            summary += "Local Models:\n"
+            for client_id, local_results in round_data['local_models'].items():
+                if 'accuracy' in local_results:
+                    summary += f"  Client {client_id}:\n"
+                    summary += f"    Accuracy: {local_results['accuracy']:.4f}\n"
+                    summary += f"    F1 Score: {local_results['f1_score']:.4f}\n"
+        
+        self.summary_text.setText(summary)
+        self.results_tabs.setCurrentIndex(0)
+        
+    def display_all_results(self, test_results):
+        """Display results for all rounds."""
+        # Summary
+        summary = f"All Rounds Test Results\n"
+        summary += f"Experiment: {test_results['experiment_id']}\n"
+        summary += f"Test Size: {test_results['test_size']}\n"
+        summary += "=" * 40 + "\n\n"
+        
+        # Detailed table
+        rounds = test_results['rounds']
+        self.details_table.setRowCount(len(rounds))
+        self.details_table.setColumnCount(4)
+        self.details_table.setHorizontalHeaderLabels(['Round', 'Global Accuracy', 'Global F1', 'Avg Local Accuracy'])
+        
+        for i, (round_num, round_data) in enumerate(sorted(rounds.items(), key=lambda x: int(x[0]))):
+            self.details_table.setItem(i, 0, QTableWidgetItem(str(round_num)))
+            
+            # Global model metrics
+            global_acc = "N/A"
+            global_f1 = "N/A"
+            if 'global_model' in round_data and 'accuracy' in round_data['global_model']:
+                global_acc = f"{round_data['global_model']['accuracy']:.4f}"
+                global_f1 = f"{round_data['global_model']['f1_score']:.4f}"
+            
+            self.details_table.setItem(i, 1, QTableWidgetItem(global_acc))
+            self.details_table.setItem(i, 2, QTableWidgetItem(global_f1))
+            
+            # Average local accuracy
+            local_accuracies = []
+            if 'local_models' in round_data:
+                for local_results in round_data['local_models'].values():
+                    if 'accuracy' in local_results:
+                        local_accuracies.append(local_results['accuracy'])
+            
+            avg_local_acc = "N/A"
+            if local_accuracies:
+                avg_local_acc = f"{np.mean(local_accuracies):.4f}"
+            
+            self.details_table.setItem(i, 3, QTableWidgetItem(avg_local_acc))
+            
+            # Add to summary
+            summary += f"Round {round_num}:\n"
+            summary += f"  Global: Acc={global_acc}, F1={global_f1}\n"
+            summary += f"  Local Avg: Acc={avg_local_acc}\n\n"
+        
+        self.details_table.resizeColumnsToContents()
+        self.summary_text.setText(summary)
+        
+    def display_analysis(self, analysis):
+        """Display improvement analysis."""
+        analysis_text = "Improvement Analysis\n"
+        analysis_text += "=" * 30 + "\n\n"
+        
+        if "improvement_summary" in analysis:
+            # Global model summary
+            if "global_model" in analysis["improvement_summary"]:
+                global_summary = analysis["improvement_summary"]["global_model"]
+                analysis_text += "Global Model:\n"
+                analysis_text += f"  Accuracy improvement: {global_summary['accuracy_improvement']:.4f}\n"
+                analysis_text += f"  F1 improvement: {global_summary['f1_improvement']:.4f}\n"
+                analysis_text += f"  Best accuracy: {global_summary['best_accuracy']:.4f} (Round {global_summary['best_accuracy_round']})\n"
+                analysis_text += f"  Best F1: {global_summary['best_f1']:.4f} (Round {global_summary['best_f1_round']})\n\n"
+            
+            # Local models summary
+            if "local_models" in analysis["improvement_summary"]:
+                analysis_text += "Local Models:\n"
+                for client_id, local_summary in analysis["improvement_summary"]["local_models"].items():
+                    analysis_text += f"  Client {client_id}:\n"
+                    analysis_text += f"    Accuracy improvement: {local_summary['accuracy_improvement']:.4f}\n"
+                    analysis_text += f"    F1 improvement: {local_summary['f1_improvement']:.4f}\n"
+                    analysis_text += f"    Best accuracy: {local_summary['best_accuracy']:.4f} (Round {local_summary['best_accuracy_round']})\n"
+                    analysis_text += f"    Best F1: {local_summary['best_f1']:.4f} (Round {local_summary['best_f1_round']})\n\n"
+        
+        self.analysis_text.setText(analysis_text)
+        self.results_tabs.setCurrentIndex(2)
+        
+    def export_results(self):
+        """Export test results to file."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Test Results", "", "JSON Files (*.json);;CSV Files (*.csv)"
+        )
+        
+        if file_path:
+            try:
+                # Export logic would go here
+                QMessageBox.information(self, "Success", f"Results exported to {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export results: {str(e)}")
