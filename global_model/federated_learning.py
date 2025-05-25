@@ -362,6 +362,10 @@ class HeterogeneousFederatedLearning:
         # Initialize the system
         self.initialize_system(data_distribution=data_distribution, load_previous_models=load_previous_models)
         
+        # Start experiment tracking
+        experiment_name = f"federated_learning_{communication_rounds}rounds"
+        self.model_tracker.start_experiment(experiment_name)
+        
         # Ensure the global model is built
         if self.global_model and not self.global_model.is_fitted:
             print("Building global model architecture...")
@@ -372,16 +376,21 @@ class HeterogeneousFederatedLearning:
             'communication_rounds': communication_rounds,
             'hyperparameter_tuning': hyperparameter_tuning,
             'data_distribution': data_distribution,
-            'cumulative_learning': load_previous_models
+            'cumulative_learning': load_previous_models,
+            'experiment_id': self.model_tracker.current_experiment_id
         })
         
         # Run communication rounds
         for round_num in range(1, communication_rounds + 1):
             print(f"\n--- Communication Round {round_num}/{communication_rounds} ---")
             
+            # Store current training parameters for round tracking
+            self._current_local_epochs = local_epochs
+            self._current_hyperparameter_tuning = (round_num == 1 and hyperparameter_tuning)
+            
             # Train local models
             self.train_local_models(
-                hyperparameter_tuning=(round_num == 1 and hyperparameter_tuning),
+                hyperparameter_tuning=self._current_hyperparameter_tuning,
                 local_epochs=local_epochs
             )
             
@@ -389,7 +398,10 @@ class HeterogeneousFederatedLearning:
             self.transfer_knowledge(round_num)
             
             # Evaluate and log round results
-            self.evaluate_round(round_num)
+            round_metrics = self.evaluate_round(round_num)
+            
+            # Save models for this round
+            self.save_round_models(round_num, round_metrics)
         
         # Final evaluation
         test_metrics = self.evaluate_global_model()
@@ -400,15 +412,30 @@ class HeterogeneousFederatedLearning:
         # Generate final visualizations
         self.generate_visualizations()
         
+        # Test all rounds and generate improvement analysis
+        print("\n=== Comprehensive Round-by-Round Analysis ===")
+        
+        # Test models across all rounds
+        all_rounds_test_results = self.test_all_rounds(save_results=True)
+        
+        # Generate improvement analysis
+        improvement_analysis = self.generate_improvement_analysis(save_plots=True)
+        
+        # Finish experiment tracking
+        self.model_tracker.finish_experiment(final_metrics=test_metrics)
+        
         # Log the completion of federated learning
         self.logger.log_stage("federated_learning_completed", {
-            'final_test_metrics': test_metrics
+            'final_test_metrics': test_metrics,
+            'experiment_id': self.model_tracker.current_experiment_id if hasattr(self.model_tracker, 'current_experiment_id') else None,
+            'improvement_analysis': improvement_analysis
         })
         
         # Close logger and save all data
         self.logger.close()
         
         print("Federated learning completed.")
+        print(f"Experiment results saved in: {self.model_tracker.current_experiment_dir if hasattr(self.model_tracker, 'current_experiment_dir') else 'N/A'}")
         
         return self.global_model
     
@@ -684,6 +711,349 @@ class HeterogeneousFederatedLearning:
         
         return saved_paths
     
+    def test_round_models(self, round_num, test_data=None, test_labels=None):
+        """
+        Test models from a specific round on test data.
+        
+        Args:
+            round_num: Round number to test
+            test_data: Test dataset features (uses self.data_loader.X_test if None)
+            test_labels: Test dataset labels (uses self.data_loader.y_test if None)
+            
+        Returns:
+            Dictionary with test results for the round
+        """
+        print(f"\nTesting models from round {round_num}...")
+        
+        # Use default test data if not provided
+        if test_data is None:
+            test_data = self.data_loader.X_test
+        if test_labels is None:
+            test_labels = self.data_loader.y_test
+        
+        # Get experiment ID
+        experiment_id = getattr(self.model_tracker, 'current_experiment_id', None)
+        if not experiment_id:
+            experiment_id = self.model_tracker.get_latest_experiment()
+            if not experiment_id:
+                print("No experiment found for testing")
+                return None
+        
+        # Get round models
+        round_data = self.model_tracker.get_round_models(experiment_id, round_num)
+        if not round_data:
+            print(f"No models found for round {round_num}")
+            return None
+        
+        from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
+        import joblib
+        
+        test_results = {
+            "round_num": round_num,
+            "experiment_id": experiment_id,
+            "test_size": len(test_labels),
+            "timestamp": pd.Timestamp.now().isoformat(),
+            "global_model": {},
+            "local_models": {}
+        }
+        
+        # Test global model
+        global_model_path = round_data["global_model"]["path"]
+        if global_model_path and os.path.exists(global_model_path):
+            try:
+                print(f"  Testing global model...")
+                global_model = joblib.load(global_model_path)
+                global_predictions = global_model.predict(test_data)
+                
+                global_accuracy = accuracy_score(test_labels, global_predictions)
+                global_f1 = f1_score(test_labels, global_predictions, average='weighted')
+                
+                test_results["global_model"] = {
+                    "accuracy": global_accuracy,
+                    "f1_score": global_f1,
+                    "model_path": global_model_path,
+                    "training_metrics": round_data["global_model"]["metrics"]
+                }
+                
+                print(f"    Accuracy: {global_accuracy:.4f}, F1: {global_f1:.4f}")
+                
+            except Exception as e:
+                print(f"    Error testing global model: {e}")
+                test_results["global_model"]["error"] = str(e)
+        
+        # Test local models
+        for client_id, local_data in round_data["local_models"].items():
+            local_model_path = local_data["path"]
+            if local_model_path and os.path.exists(local_model_path):
+                try:
+                    print(f"  Testing client {client_id} model...")
+                    local_model = joblib.load(local_model_path)
+                    local_predictions = local_model.predict(test_data)
+                    
+                    local_accuracy = accuracy_score(test_labels, local_predictions)
+                    local_f1 = f1_score(test_labels, local_predictions, average='weighted')
+                    
+                    test_results["local_models"][client_id] = {
+                        "accuracy": local_accuracy,
+                        "f1_score": local_f1,
+                        "model_path": local_model_path,
+                        "training_metrics": local_data["metrics"]
+                    }
+                    
+                    print(f"    Accuracy: {local_accuracy:.4f}, F1: {local_f1:.4f}")
+                    
+                except Exception as e:
+                    print(f"    Error testing client {client_id}: {e}")
+                    test_results["local_models"][client_id] = {"error": str(e)}
+        
+        return test_results
+    
+    def test_all_rounds(self, experiment_id=None, save_results=True):
+        """
+        Test models from all rounds in an experiment.
+        
+        Args:
+            experiment_id: Experiment ID to test (uses current/latest if None)
+            save_results: Whether to save test results to disk
+            
+        Returns:
+            Dictionary with test results for all rounds
+        """
+        # Determine experiment ID
+        if experiment_id is None:
+            experiment_id = getattr(self.model_tracker, 'current_experiment_id', None)
+            if not experiment_id:
+                experiment_id = self.model_tracker.get_latest_experiment()
+                if not experiment_id:
+                    print("No experiment found for testing")
+                    return None
+        
+        print(f"Testing all rounds for experiment: {experiment_id}")
+        
+        # Use model tracker's comprehensive testing method
+        test_results = self.model_tracker.test_models_across_rounds(
+            experiment_id=experiment_id,
+            test_data=self.data_loader.X_test,
+            test_labels=self.data_loader.y_test,
+            class_names=self.data_loader.class_names,
+            save_results=save_results
+        )
+        
+        return test_results
+    
+    def generate_improvement_analysis(self, experiment_id=None, save_plots=True):
+        """
+        Generate comprehensive improvement analysis for an experiment.
+        
+        Args:
+            experiment_id: Experiment ID to analyze (uses current/latest if None)
+            save_plots: Whether to save improvement plots
+            
+        Returns:
+            Dictionary with improvement analysis
+        """
+        # Determine experiment ID
+        if experiment_id is None:
+            experiment_id = getattr(self.model_tracker, 'current_experiment_id', None)
+            if not experiment_id:
+                experiment_id = self.model_tracker.get_latest_experiment()
+                if not experiment_id:
+                    print("No experiment found for analysis")
+                    return None
+        
+        print(f"Generating improvement analysis for experiment: {experiment_id}")
+        
+        # Use model tracker's analysis method
+        analysis = self.model_tracker.analyze_improvement_trends(
+            experiment_id=experiment_id,
+            save_plots=save_plots
+        )
+        
+        # Print summary
+        if "improvement_summary" in analysis:
+            print("\n=== Improvement Summary ===")
+            
+            # Global model summary
+            if "global_model" in analysis["improvement_summary"]:
+                global_summary = analysis["improvement_summary"]["global_model"]
+                print(f"Global Model:")
+                print(f"  Accuracy improvement: {global_summary['accuracy_improvement']:.4f}")
+                print(f"  F1 improvement: {global_summary['f1_improvement']:.4f}")
+                print(f"  Best accuracy: {global_summary['best_accuracy']:.4f} (Round {global_summary['best_accuracy_round']})")
+                print(f"  Best F1: {global_summary['best_f1']:.4f} (Round {global_summary['best_f1_round']})")
+            
+            # Local models summary
+            if "local_models" in analysis["improvement_summary"]:
+                print(f"\nLocal Models:")
+                for client_id, local_summary in analysis["improvement_summary"]["local_models"].items():
+                    print(f"  Client {client_id}:")
+                    print(f"    Accuracy improvement: {local_summary['accuracy_improvement']:.4f}")
+                    print(f"    F1 improvement: {local_summary['f1_improvement']:.4f}")
+                    print(f"    Best accuracy: {local_summary['best_accuracy']:.4f} (Round {local_summary['best_accuracy_round']})")
+        
+        return analysis
+    
+    def save_round_models(self, round_num, round_metrics=None):
+        """
+        Save all models after a specific round with round-specific organization.
+        
+        Args:
+            round_num: Current round number
+            round_metrics: Optional metrics for this round
+            
+        Returns:
+            Dictionary of saved model paths organized by round
+        """
+        print(f"\nSaving models for round {round_num}...")
+        
+        # Ensure experiment is started
+        if not hasattr(self.model_tracker, 'current_experiment_id') or not self.model_tracker.current_experiment_id:
+            self.model_tracker.start_experiment()
+        
+        experiment_id = self.model_tracker.current_experiment_id
+        round_dir = os.path.join(self.model_tracker.current_experiment_dir, f"round_{round_num}")
+        
+        saved_paths = {
+            "round_num": round_num,
+            "experiment_id": experiment_id,
+            "global_model": None,
+            "local_models": {}
+        }
+        
+        # Save local models
+        local_model_paths = {}
+        local_metrics = {}
+        
+        for client_id, client_data in self.local_models.items():
+            model = client_data['model']
+            if model.is_fitted:
+                try:
+                    # Calculate current metrics for this model
+                    X_val = client_data['X_val']
+                    y_val = client_data['y_val']
+                    y_val_pred = model.predict(X_val)
+                    
+                    from sklearn.metrics import accuracy_score, f1_score
+                    accuracy = accuracy_score(y_val, y_val_pred)
+                    f1 = f1_score(y_val, y_val_pred, average='weighted')
+                    
+                    model_metrics = {
+                        'accuracy': accuracy,
+                        'f1_score': f1,
+                        'round_num': round_num
+                    }
+                    
+                    # Save model with round information
+                    path = model.save_model(
+                        round_num=round_num,
+                        experiment_id=experiment_id,
+                        metadata=model_metrics
+                    )
+                    
+                    saved_paths["local_models"][client_id] = path
+                    local_model_paths[client_id] = path
+                    local_metrics[client_id] = model_metrics
+                    
+                    print(f"  Saved client {client_id} model: {model.model_name}")
+                    
+                except Exception as e:
+                    print(f"  Error saving model for client {client_id}: {e}")
+        
+        # Save global model
+        global_model_path = None
+        global_metrics = {}
+        
+        if self.global_model and self.global_model.is_fitted:
+            try:
+                # Calculate current metrics for global model
+                X_val = self.data_loader.X_val
+                y_val = self.data_loader.y_val
+                y_val_pred = self.global_model.predict(X_val)
+                
+                from sklearn.metrics import accuracy_score, f1_score
+                accuracy = accuracy_score(y_val, y_val_pred)
+                f1 = f1_score(y_val, y_val_pred, average='weighted')
+                
+                global_metrics = {
+                    'accuracy': accuracy,
+                    'f1_score': f1,
+                    'round_num': round_num
+                }
+                
+                # Save global model
+                global_save_dir = os.path.join(round_dir, "global_model")
+                global_model_path = self.global_model.save_model(save_dir=global_save_dir)
+                
+                # Save global model metadata
+                metadata_dict = {
+                    "model_type": "global",
+                    "round_num": round_num,
+                    "experiment_id": experiment_id,
+                    "save_timestamp": pd.Timestamp.now().isoformat(),
+                    "metrics": global_metrics
+                }
+                
+                metadata_path = os.path.join(global_save_dir, "metadata.json")
+                import json
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata_dict, f, indent=2)
+                
+                saved_paths["global_model"] = global_model_path
+                
+                print(f"  Saved global model")
+                
+            except Exception as e:
+                print(f"  Error saving global model: {e}")
+        
+        # Register round models in tracker
+        if local_model_paths or global_model_path:
+            try:
+                round_config = {
+                    "communication_round": round_num,
+                    "local_epochs": getattr(self, '_current_local_epochs', None),
+                    "hyperparameter_tuning": getattr(self, '_current_hyperparameter_tuning', False)
+                }
+                
+                if round_metrics:
+                    round_config.update(round_metrics)
+                
+                self.model_tracker.register_round_models(
+                    round_num=round_num,
+                    global_model_path=global_model_path,
+                    local_model_paths=local_model_paths,
+                    global_metrics=global_metrics,
+                    local_metrics=local_metrics,
+                    round_config=round_config
+                )
+                
+            except Exception as e:
+                print(f"  Error registering round models: {e}")
+        
+        # Save round summary
+        round_summary = {
+            "round_num": round_num,
+            "timestamp": pd.Timestamp.now().isoformat(),
+            "models_saved": {
+                "global": global_model_path is not None,
+                "local_count": len(local_model_paths)
+            },
+            "metrics": {
+                "global": global_metrics,
+                "local": local_metrics
+            }
+        }
+        
+        summary_path = os.path.join(round_dir, "round_summary.json")
+        import json
+        with open(summary_path, 'w') as f:
+            json.dump(round_summary, f, indent=2)
+        
+        print(f"Round {round_num} models saved successfully")
+        print(f"  Global model: {'✓' if global_model_path else '✗'}")
+        print(f"  Local models: {len(local_model_paths)}/{len(self.local_models)}")
+        
+        return saved_paths
+    
     def update_local_models_with_global_knowledge(self):
         """
         Update local models with knowledge from the global model.
@@ -851,6 +1221,9 @@ class HeterogeneousFederatedLearning:
             
             # By default, receive knowledge transfer
             should_update[client_id] = True
+            
+            # Initialize model_alpha with default value
+            model_alpha = global_adaptive_alpha
             
             # Get current model performance
             if client_id in pre_transfer_metrics:

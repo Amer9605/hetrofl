@@ -510,4 +510,21 @@ class ModelEvaluator:
         
         print(f"Metrics saved to {save_path}")
         
-        return metrics_df 
+        return metrics_df
+
+
+def calculate_metrics(y_true, y_pred, y_prob=None, class_names=None):
+    """
+    Convenience function to calculate classification metrics.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        y_prob: Predicted probabilities (optional)
+        class_names: List of class names (optional)
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    evaluator = ModelEvaluator(class_names=class_names)
+    return evaluator.evaluate_classifier(y_true, y_pred, y_prob)

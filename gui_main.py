@@ -294,8 +294,9 @@ class LocalModelWindow(QMainWindow):
         test_tab = QWidget()
         test_layout = QVBoxLayout(test_tab)
         
-        # Create test panel
-        self.test_panel = ModelTestPanel(model=None, model_name=model_name)
+        # Create test panel with client information
+        test_model_name = f"client_{self.client_id}_{model_name}"
+        self.test_panel = ModelTestPanel(model=None, model_name=test_model_name)
         test_layout.addWidget(self.test_panel)
         
         # Add tabs to tab widget
@@ -637,10 +638,29 @@ class GlobalModelWindow(QMainWindow):
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
         
+        # Tab 4: Global Model Testing
+        global_test_tab = QWidget()
+        global_test_layout = QVBoxLayout(global_test_tab)
+        
+        # Create global model test panel
+        self.global_test_panel = ModelTestPanel(model=None, model_name="global_model")
+        global_test_layout.addWidget(self.global_test_panel)
+        
+        # Tab 5: Round-by-Round Testing
+        from gui.gui_test_interface import RoundTestingWidget
+        round_test_tab = QWidget()
+        round_test_layout = QVBoxLayout(round_test_tab)
+        
+        # Create round testing widget
+        self.round_test_widget = RoundTestingWidget()
+        round_test_layout.addWidget(self.round_test_widget)
+        
         # Add tabs to tab widget
         self.tabs.addTab(config_tab, "Configuration & Control")
         self.tabs.addTab(viz_tab, "Global Performance")
         self.tabs.addTab(log_tab, "Communication Log")
+        self.tabs.addTab(global_test_tab, "Global Model Testing")
+        self.tabs.addTab(round_test_tab, "Round-by-Round Analysis")
         
         # Status bar
         self.status_bar = QStatusBar()
