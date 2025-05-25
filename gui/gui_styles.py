@@ -61,12 +61,10 @@ class ModernStyles:
         
         QPushButton:hover {{
             background-color: {colors['primary_dark']};
-            transform: translateY(-1px);
         }}
         
         QPushButton:pressed {{
             background-color: {colors['primary_dark']};
-            transform: translateY(0px);
         }}
         
         QPushButton:disabled {{

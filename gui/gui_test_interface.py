@@ -487,6 +487,7 @@ class ModelTestPanel(QWidget):
         self.model_name = model_name
         self.current_dataset = None
         self.test_worker = None
+        self.model_tracker = ModelTracker()
         
         self.setup_ui()
         
@@ -495,9 +496,9 @@ class ModelTestPanel(QWidget):
         layout = QVBoxLayout(self)
         
         # Title
-        title_label = QLabel(f"Model Testing - {self.model_name}")
-        title_label.setProperty("class", "title")
-        layout.addWidget(title_label)
+        self.title_label = QLabel(f"Model Testing - {self.model_name}")
+        self.title_label.setProperty("class", "title")
+        layout.addWidget(self.title_label)
         
         # Create splitter for dataset selector and results
         splitter = QSplitter(Qt.Horizontal)
@@ -550,6 +551,89 @@ class ModelTestPanel(QWidget):
         self.model = model
         self.model_name = model_name
         
+        # Try to load the best model from the latest experiment if no model is provided
+        if self.model is None:
+            self.load_best_model_from_rounds()
+    
+    def load_best_model_from_rounds(self):
+        """Load the best model from the latest experiment rounds."""
+        try:
+            # Get the latest experiment
+            latest_experiment = self.model_tracker.get_latest_experiment()
+            if not latest_experiment:
+                print("No experiments found for model loading")
+                return
+            
+            # Get all rounds for the experiment
+            rounds = self.model_tracker.get_experiment_rounds(latest_experiment)
+            if not rounds:
+                print("No rounds found in the latest experiment")
+                return
+            
+            # Find the best performing round for the model type
+            best_round = None
+            best_accuracy = 0.0
+            
+            # Extract client ID from model name if it's a local model
+            client_id = None
+            if "client" in self.model_name.lower():
+                try:
+                    # Try to extract client ID from model name
+                    parts = self.model_name.lower().split("client")
+                    if len(parts) > 1:
+                        client_id = int(parts[1].split("_")[1]) if "_" in parts[1] else int(parts[1].strip())
+                except:
+                    client_id = 0  # Default to client 0
+            
+            # Search through rounds to find the best model
+            for round_num, round_data in rounds.items():
+                if client_id is not None:
+                    # Looking for local model
+                    if str(client_id) in round_data.get("local_models", {}):
+                        local_metrics = round_data["local_models"][str(client_id)]["metrics"]
+                        accuracy = local_metrics.get("accuracy", 0.0)
+                        if accuracy > best_accuracy:
+                            best_accuracy = accuracy
+                            best_round = round_num
+                else:
+                    # Looking for global model
+                    global_metrics = round_data.get("global_model", {}).get("metrics", {})
+                    accuracy = global_metrics.get("accuracy", 0.0)
+                    if accuracy > best_accuracy:
+                        best_accuracy = accuracy
+                        best_round = round_num
+            
+            if best_round:
+                # Load the best model
+                round_data = rounds[best_round]
+                model_path = None
+                
+                if client_id is not None:
+                    # Load local model
+                    if str(client_id) in round_data.get("local_models", {}):
+                        model_path = round_data["local_models"][str(client_id)]["path"]
+                else:
+                    # Load global model
+                    model_path = round_data.get("global_model", {}).get("path")
+                
+                if model_path and os.path.exists(model_path):
+                    import joblib
+                    self.model = joblib.load(model_path)
+                    print(f"Loaded best model from round {best_round} with accuracy {best_accuracy:.4f}")
+                    
+                    # Update the title to reflect the loaded model
+                    if hasattr(self, 'title_label'):
+                        self.title_label.setText(f"Model Testing - {self.model_name} (Best: Round {best_round})")
+                else:
+                    print(f"Model file not found: {model_path}")
+            else:
+                print("No suitable model found in experiment rounds")
+                
+        except Exception as e:
+            print(f"Error loading best model from rounds: {e}")
+            import traceback
+            traceback.print_exc()
+        
     @Slot(str, dict)
     def on_dataset_selected(self, path: str, config: Dict[str, Any]):
         """Handle dataset selection."""
@@ -592,8 +676,12 @@ class ModelTestPanel(QWidget):
             
     def run_test(self):
         """Run the model test."""
+        # Try to load the best model if no model is available
+        if not self.model:
+            self.load_best_model_from_rounds()
+        
         if not self.model or not self.current_dataset:
-            QMessageBox.warning(self, "Warning", "Model or dataset not available.")
+            QMessageBox.warning(self, "Warning", "Model or dataset not available. Please ensure you have run federated learning training first.")
             return
             
         try:
