@@ -4,6 +4,8 @@ GUI for the HETROFL (Heterogeneous Federated Learning) system.
 This module creates a desktop application that visualizes the
 federated learning process with separate windows for global
 and local models.
+
+Enhanced with modern Material Design styling and comprehensive testing capabilities.
 """
 
 import os
@@ -17,10 +19,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QCheckBox,
     QTabWidget, QGroupBox, QFormLayout, QMessageBox, QFileDialog,
     QSplitter, QStatusBar, QProgressBar, QLineEdit, QScrollArea, QTextEdit,
-    QSizePolicy
+    QSizePolicy, QMenuBar, QMenu, QToolBar
 )
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QObject, QSize
-from PySide6.QtGui import QPixmap, QIcon, QFont, QAction, QColor
+from PySide6.QtGui import QPixmap, QIcon, QFont, QAction, QColor, QKeySequence
 
 import pyqtgraph as pg
 import matplotlib
@@ -43,6 +45,11 @@ from config.config import (
     LOCAL_EPOCHS,
     DATASET_SAMPLE_SIZE
 )
+
+# Import new GUI components
+from gui.gui_themes import ThemeManager
+from gui.gui_test_interface import ModelTestPanel
+from gui.gui_dataset_manager import DatasetManager
 
 # Set up PyQtGraph configuration
 pg.setConfigOption('background', 'w')
@@ -174,14 +181,16 @@ class MatplotlibCanvas(FigureCanvas):
 
 class LocalModelWindow(QMainWindow):
     """Window for visualizing a local model's performance and training."""
-    def __init__(self, client_id, model_name):
+    def __init__(self, client_id, model_name, theme_manager=None):
         super().__init__()
         self.client_id = client_id
         self.model_name = model_name
         self.metrics_history = {}
+        self.theme_manager = theme_manager
+        self.model_instance = None  # Will store the actual model for testing
         
         self.setWindowTitle(f"Local Model {client_id+1}: {model_name}")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1000, 700)
         
         # Central widget and layout
         central_widget = QWidget()
@@ -281,15 +290,30 @@ class LocalModelWindow(QMainWindow):
         params_layout.addWidget(self.params_label)
         details_layout.addWidget(params_group)
         
+        # Tab 4: Model Testing
+        test_tab = QWidget()
+        test_layout = QVBoxLayout(test_tab)
+        
+        # Create test panel
+        self.test_panel = ModelTestPanel(model=None, model_name=model_name)
+        test_layout.addWidget(self.test_panel)
+        
         # Add tabs to tab widget
         self.tabs.addTab(overview_tab, "Overview")
         self.tabs.addTab(plot_tab, "Real-time Plots")
         self.tabs.addTab(details_tab, "Model Details")
+        self.tabs.addTab(test_tab, "Model Testing")
         
         # Status bar
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("Ready")
+    
+    def set_model_instance(self, model):
+        """Set the model instance for testing."""
+        self.model_instance = model
+        if hasattr(self, 'test_panel'):
+            self.test_panel.set_model(model, self.model_name)
     
     @Slot(dict)
     def update_metrics(self, stage_metrics):
@@ -429,10 +453,17 @@ class GlobalModelWindow(QMainWindow):
         self.transfer_rounds = []
         self.transfer_vals = []
         self.setWindowTitle("HETROFL - Global Model Dashboard")
-        self.setMinimumSize(1000, 800)
+        self.setMinimumSize(1200, 900)
         
         # Store local model windows
         self.local_windows = {}
+        
+        # Initialize theme manager
+        self.theme_manager = ThemeManager()
+        
+        # Setup menu bar and toolbar
+        self.setup_menu_bar()
+        self.setup_toolbar()
         
         # Initialize FL system
         self.init_fl_system()
@@ -623,6 +654,210 @@ class GlobalModelWindow(QMainWindow):
         
         # Worker thread
         self.worker = None
+        
+        # Apply initial theme
+        self.apply_theme()
+    
+    def setup_menu_bar(self):
+        """Setup the menu bar with modern options."""
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu('&File')
+        
+        # New experiment action
+        new_action = QAction('&New Experiment', self)
+        new_action.setShortcut(QKeySequence.New)
+        new_action.setStatusTip('Start a new federated learning experiment')
+        new_action.triggered.connect(self.new_experiment)
+        file_menu.addAction(new_action)
+        
+        # Load experiment action
+        load_action = QAction('&Load Experiment', self)
+        load_action.setShortcut(QKeySequence.Open)
+        load_action.setStatusTip('Load a previous experiment')
+        load_action.triggered.connect(self.load_experiment)
+        file_menu.addAction(load_action)
+        
+        file_menu.addSeparator()
+        
+        # Export results action
+        export_action = QAction('&Export Results', self)
+        export_action.setShortcut(QKeySequence('Ctrl+E'))
+        export_action.setStatusTip('Export experiment results')
+        export_action.triggered.connect(self.export_results)
+        file_menu.addAction(export_action)
+        
+        file_menu.addSeparator()
+        
+        # Exit action
+        exit_action = QAction('E&xit', self)
+        exit_action.setShortcut(QKeySequence.Quit)
+        exit_action.setStatusTip('Exit application')
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # View menu
+        view_menu = menubar.addMenu('&View')
+        
+        # Theme submenu
+        theme_menu = view_menu.addMenu('&Theme')
+        
+        # Light theme action
+        light_action = QAction('&Light', self)
+        light_action.setCheckable(True)
+        light_action.setChecked(self.theme_manager.current_theme == 'light')
+        light_action.triggered.connect(lambda: self.change_theme('light'))
+        theme_menu.addAction(light_action)
+        
+        # Dark theme action
+        dark_action = QAction('&Dark', self)
+        dark_action.setCheckable(True)
+        dark_action.setChecked(self.theme_manager.current_theme == 'dark')
+        dark_action.triggered.connect(lambda: self.change_theme('dark'))
+        theme_menu.addAction(dark_action)
+        
+        # Auto theme action
+        auto_action = QAction('&Auto', self)
+        auto_action.setCheckable(True)
+        auto_action.setChecked(self.theme_manager.current_theme == 'auto')
+        auto_action.triggered.connect(lambda: self.change_theme('auto'))
+        theme_menu.addAction(auto_action)
+        
+        view_menu.addSeparator()
+        
+        # Show local models action
+        show_local_action = QAction('Show &Local Models', self)
+        show_local_action.setShortcut(QKeySequence('Ctrl+L'))
+        show_local_action.setStatusTip('Show all local model windows')
+        show_local_action.triggered.connect(self.show_local_models)
+        view_menu.addAction(show_local_action)
+        
+        # Dataset manager action
+        dataset_action = QAction('&Dataset Manager', self)
+        dataset_action.setShortcut(QKeySequence('Ctrl+D'))
+        dataset_action.setStatusTip('Open dataset manager')
+        dataset_action.triggered.connect(self.show_dataset_manager)
+        view_menu.addAction(dataset_action)
+        
+        # Help menu
+        help_menu = menubar.addMenu('&Help')
+        
+        # About action
+        about_action = QAction('&About', self)
+        about_action.setStatusTip('About HETROFL')
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+    
+    def setup_toolbar(self):
+        """Setup the toolbar with quick actions."""
+        toolbar = self.addToolBar('Main')
+        toolbar.setMovable(False)
+        
+        # Start training action
+        start_action = QAction('Start Training', self)
+        start_action.setStatusTip('Start federated learning training')
+        start_action.triggered.connect(self.start_training)
+        toolbar.addAction(start_action)
+        
+        # Stop training action
+        stop_action = QAction('Stop Training', self)
+        stop_action.setStatusTip('Stop federated learning training')
+        stop_action.triggered.connect(self.stop_training)
+        toolbar.addAction(stop_action)
+        
+        toolbar.addSeparator()
+        
+        # View local models action
+        local_action = QAction('Local Models', self)
+        local_action.setStatusTip('Show local model windows')
+        local_action.triggered.connect(self.show_local_models)
+        toolbar.addAction(local_action)
+        
+        # Dataset manager action
+        dataset_action = QAction('Dataset Manager', self)
+        dataset_action.setStatusTip('Open dataset manager')
+        dataset_action.triggered.connect(self.show_dataset_manager)
+        toolbar.addAction(dataset_action)
+        
+        toolbar.addSeparator()
+        
+        # Theme toggle action
+        theme_action = QAction('Toggle Theme', self)
+        theme_action.setStatusTip('Toggle between light and dark theme')
+        theme_action.triggered.connect(lambda: self.theme_manager.toggle_theme(QApplication.instance()))
+        toolbar.addAction(theme_action)
+    
+    def apply_theme(self):
+        """Apply the current theme to the application."""
+        app = QApplication.instance()
+        if app:
+            self.theme_manager.apply_theme(app)
+    
+    def change_theme(self, theme_name):
+        """Change to a specific theme."""
+        app = QApplication.instance()
+        if app:
+            self.theme_manager.apply_theme(app, theme_name)
+    
+    def new_experiment(self):
+        """Start a new experiment."""
+        # Reset any existing state
+        self.local_metrics_history = {}
+        self.transfer_rounds = []
+        self.transfer_vals = []
+        
+        # Clear plots
+        self.global_acc_curve.setData([], [])
+        self.transfer_curve.setData([], [])
+        for curve in self.local_acc_curves.values():
+            curve.setData([], [])
+        
+        # Reset labels
+        self.global_acc_label.setText("--")
+        self.global_f1_label.setText("--")
+        self.global_loss_label.setText("--")
+        self.avg_client_acc_label.setText("--")
+        
+        self.log_message("New experiment started")
+    
+    def load_experiment(self):
+        """Load a previous experiment."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Experiment", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if file_path:
+            # Implementation would load experiment state
+            self.log_message(f"Loading experiment from {file_path}")
+            QMessageBox.information(self, "Info", "Experiment loading not yet implemented")
+    
+    def show_dataset_manager(self):
+        """Show the dataset manager window."""
+        if not hasattr(self, 'dataset_manager_window'):
+            self.dataset_manager_window = DatasetManager()
+            self.dataset_manager_window.setWindowTitle("HETROFL - Dataset Manager")
+            
+        self.dataset_manager_window.show()
+        self.dataset_manager_window.activateWindow()
+    
+    def show_about(self):
+        """Show about dialog."""
+        about_text = """
+        <h2>HETROFL</h2>
+        <p><b>Heterogeneous Federated Learning System</b></p>
+        <p>Version 2.0</p>
+        <p>A comprehensive federated learning framework supporting multiple model types 
+        with advanced knowledge distillation and transfer learning capabilities.</p>
+        <p><b>Features:</b></p>
+        <ul>
+        <li>Multiple ML model support (XGBoost, Random Forest, LightGBM, CNN, Autoencoder)</li>
+        <li>Advanced knowledge distillation</li>
+        <li>Real-time visualization</li>
+        <li>Comprehensive model testing</li>
+        <li>Modern Material Design interface</li>
+        </ul>
+        """
+        QMessageBox.about(self, "About HETROFL", about_text)
     
     def init_fl_system(self):
         """Initialize the federated learning system."""
@@ -797,6 +1032,12 @@ class GlobalModelWindow(QMainWindow):
         """Update a specific local model with new metrics."""
         if client_id in self.local_windows:
             self.local_windows[client_id].update_metrics(metrics)
+            
+            # Update model instance for testing if available
+            if hasattr(self.fl_system, 'local_models') and client_id < len(self.fl_system.local_models):
+                model_instance = self.fl_system.local_models[client_id]
+                self.local_windows[client_id].set_model_instance(model_instance)
+            
             # Also update the global vs local accuracy plot for this client
             stage = list(metrics.keys())[0]
             if 'round_' in stage:
@@ -856,12 +1097,15 @@ class GlobalModelWindow(QMainWindow):
         # Create windows if they don't exist
         for client_id, model_name in enumerate(CLIENT_MODELS):
             if client_id not in self.local_windows:
-                local_window = LocalModelWindow(client_id, model_name)
+                local_window = LocalModelWindow(client_id, model_name, self.theme_manager)
                 self.local_windows[client_id] = local_window
                 
+                # Apply current theme to the window
+                self.theme_manager.apply_theme(QApplication.instance())
+                
                 # Position windows in a grid
-                x_pos = (client_id % 3) * 820
-                y_pos = (client_id // 3) * 620
+                x_pos = (client_id % 3) * 900
+                y_pos = (client_id // 3) * 700
                 local_window.move(x_pos, y_pos)
             
             # Show the window
@@ -907,22 +1151,35 @@ class GlobalModelWindow(QMainWindow):
 
 def main():
     """Main function to run the GUI application."""
-    parser = argparse.ArgumentParser(description="HETROFL GUI")
+    parser = argparse.ArgumentParser(description="HETROFL GUI Enhanced")
     parser.add_argument('--style', default='Fusion', help='Qt style to use')
+    parser.add_argument('--theme', default='light', choices=['light', 'dark', 'auto'], help='Theme to use')
     args = parser.parse_args()
     
     app = QApplication(sys.argv)
     app.setStyle(args.style)
+    app.setApplicationName("HETROFL")
+    app.setApplicationVersion("2.0")
+    app.setOrganizationName("HETROFL Team")
     
-    # Show splash screen
-    splash_pixmap = QPixmap(400, 300)
-    splash_pixmap.fill(Qt.white)
+    # Create and show enhanced splash screen
+    splash_pixmap = QPixmap(600, 400)
+    splash_pixmap.fill(QColor("#2196F3"))
     splash = QSplashScreen(splash_pixmap)
+    splash.showMessage(
+        "HETROFL v2.0\nHeterogeneous Federated Learning System\nLoading...",
+        alignment=Qt.AlignCenter | Qt.AlignBottom,
+        color=Qt.white
+    )
     splash.show()
     app.processEvents()
     
     # Create main window
     main_window = GlobalModelWindow()
+    
+    # Apply initial theme
+    if args.theme:
+        main_window.theme_manager.apply_theme(app, args.theme)
     
     # Hide splash and show main window
     splash.finish(main_window)
